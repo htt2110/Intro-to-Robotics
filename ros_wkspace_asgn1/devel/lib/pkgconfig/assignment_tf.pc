@@ -1,0 +1,8 @@
+prefix=/home/harshit/ros_wkspace_asgn1/devel
+
+Name: assignment_tf
+Description: Description of assignment_tf
+Version: 0.0.0
+Cflags: 
+Libs: -L${prefix}/lib 
+Requires: 

@@ -1,0 +1,2 @@
+assignment_cc/assignment_cc:assignment_cc/cartesian_control:assignment_cc/lwr_robot/lwr_defs:assignment_cc/robot_sim:assignment_cc/ur_description:assignment_cc/urdf_parser_py
+-DCATKIN_DEVEL_PREFIX=/home/harshit/ros_wkspace_asgn2/devel -DCMAKE_INSTALL_PREFIX=/home/harshit/ros_wkspace_asgn2/install -G Unix Makefiles

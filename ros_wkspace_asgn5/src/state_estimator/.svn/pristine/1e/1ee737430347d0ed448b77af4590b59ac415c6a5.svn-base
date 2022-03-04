@@ -1,0 +1,249 @@
+#!/usr/bin/env python
+
+# Columbia Engineering
+# MECS 4602 - Fall 2018
+
+import math
+import numpy
+import time
+
+import rospy
+
+from state_estimator.msg import RobotPose
+from state_estimator.msg import SensorData
+
+class Estimator(object):
+    def __init__(self):
+
+        # Publisher to publish state estimate
+        self.pub_est = rospy.Publisher("/robot_pose_estimate", RobotPose, queue_size=1)
+        # Initial estimates for the state and the covariance matrix
+        self.x = numpy.zeros((3,1))
+        self.P = numpy.zeros((3,3))
+
+        # Covariance matrix for process (model) noise
+        self.V = numpy.zeros((3,3))
+
+        self.V[0,0] = 0.0025
+        self.V[1,1] = 0.0025
+        self.V[2,2] = 0.005
+
+        self.step_size = 0.01
+
+        # Subscribe to command input and sensory output of robot
+        rospy.Subscriber("/sensor_data", SensorData, self.sensor_callback)
+    # This function gets called every time the robot publishes its control 
+    # input and sensory output. You must make use of what you know about 
+    # extended Kalman filters to come up with an estimate of the current
+    # state of the robot and covariance matrix.
+    # The SensorData message contains fields 'vel_trans' and 'vel_ang' for
+    # the commanded translational and rotational velocity respectively. 
+    # Furthermore, it contains a list 'readings' of the landmarks the
+    # robot can currently observe
+    def estimate(self, sens):
+
+        #### ----- YOUR CODE GOES HERE ----- ####           
+
+
+        F = numpy.zeros((3,3))
+        #y_plus = numpy.zeros((2,1))
+        X_next_hat = self.state_estimate(sens)
+        global L
+        L = self.valid_landmark(sens,X_next_hat)
+        num = len(L)
+        print 'L',L
+        print 'num',num
+        print 'number of sensors',len(sens.readings)
+
+        F = self.F_matrix(sens)
+        print 'F', F
+        p_next_hat = numpy.dot(F, numpy.dot(self.P, numpy.transpose(F))) + self.V
+        
+        print 'p_next_hat' , p_next_hat
+
+        #-----------h_list---------------#
+
+        h_list = self.H_matrix(X_next_hat, sens,num)
+        print 'h_list', h_list
+        
+        #-----------W matrix-------------#
+
+        W = self.covariance_sensor(sens,num)
+        print 'W = ', W
+
+        #-----------S list---------------#
+        s_list = numpy.zeros((2*(len(sens.readings)-num),2*(len(sens.readings)-num)))
+        if len(sens.readings)-num !=0:
+            s_list = numpy.dot(h_list,numpy.dot(p_next_hat,numpy.transpose(h_list))) + W
+            print 's_list', s_list
+
+        #----------R list----------------#
+        
+        r_list = numpy.zeros((3,2*num))
+        if len(sens.readings)-num!=0:
+            r_list = numpy.dot(p_next_hat,numpy.dot(numpy.transpose(h_list),numpy.linalg.inv(s_list)))
+            print 'r_list', r_list
+
+        #------------------------------------------innovation step------------------------#
+
+        landmark_estimate = self.predicted_data(X_next_hat,sens,num)
+        print 'landmark_estimate', landmark_estimate
+
+        new = numpy.zeros((2*(len(sens.readings)-num),1))
+        new = self.innovation(sens,new,landmark_estimate)
+        print 'new', new       
+
+        #-----------------------------------update step---------------------#
+
+        #--------------------------------creating update list--------------#
+
+        #------------------------------update step for state----------------#
+        update_list_x = numpy.zeros((3,1))
+        if (len(sens.readings)-num)!=0:
+            update_list_x = X_next_hat + numpy.dot(r_list,new)
+            
+        else:
+            update_list_x = X_next_hat 
+        print 'xk+1 =',update_list_x
+        #-------------------------------update step for co-variance matrix-------#
+
+        update_list_p = numpy.zeros((3,3))
+        if (len(sens.readings)-num)!=0:
+            update_list_p = p_next_hat - numpy.dot(r_list,numpy.dot(h_list,p_next_hat))
+            
+        else:
+            update_list_p = p_next_hat   
+        print 'pk+1', update_list_p
+        #-------------------------------------------------------------------------------#
+        print 'State before publishing', self.x
+        self.x = update_list_x
+        self.P = update_list_p
+        
+
+           
+
+
+#        print 'X_next_hat', X_next_hat 
+
+        #### ----- YOUR CODE GOES HERE ----- ####
+    def F_matrix(self, sens):
+        fmatrix = numpy.zeros((3,3))
+        fmatrix[0][0] = 1
+        fmatrix[0][1] = 0
+        fmatrix[0][2] = -1*sens.vel_trans*0.01*math.sin(self.x[2])
+        fmatrix[1][0] = 0
+        fmatrix[1][1] = 1 
+        fmatrix[1][2] = sens.vel_trans*0.01*math.cos(self.x[2])
+        fmatrix[2][0] = 0
+        fmatrix[2][1] = 0
+        fmatrix[2][2] = 1
+    	return fmatrix
+    def predicted_data(self,X_next_hat,sens,num):
+        print 'num',num
+        new_list = numpy.zeros((2*(len(sens.readings)-num),1))
+        if len(sens.readings)!= 0:
+            J = 0
+            for i in range(len(sens.readings)):
+                print 'sensor bearing' , sens.readings[i].range
+                if i in L:
+                    continue
+                x_range = -(X_next_hat[0]-sens.readings[i].landmark.x)
+                y_range = -(X_next_hat[1]-sens.readings[i].landmark.y)
+                range_est = math.sqrt((x_range**2)+(y_range**2))
+                bearing_est = math.atan2(y_range,x_range)-X_next_hat[2]
+                new_list[J] = range_est
+                new_list[J+1] = bearing_est
+                J = J+2
+        return new_list
+
+    def H_matrix(self, X_next_hat, sens,num):
+    	
+        
+        J = 0
+
+    	if len(sens.readings) != 0:
+            h_list = numpy.zeros((2*(len(sens.readings)-num),3))
+            for i in range(len(sens.readings)):
+               
+                if i in L:
+                    continue
+                del_range_by_del_x = (X_next_hat[0] - sens.readings[i].landmark.x) / math.sqrt(((X_next_hat[0] - sens.readings[i].landmark.x)**2) + ((X_next_hat[1] - sens.readings[i].landmark.y)**2))
+                del_range_by_del_y = (X_next_hat[1] - sens.readings[i].landmark.y) / math.sqrt(((X_next_hat[0] - sens.readings[i].landmark.x)**2) + ((X_next_hat[1] - sens.readings[i].landmark.y)**2))
+                del_bearing_by_del_x =  (sens.readings[i].landmark.y - X_next_hat[1]) / (((X_next_hat[0] - sens.readings[i].landmark.x)**2) + ((X_next_hat[1] - sens.readings[i].landmark.y)**2))
+                del_bearing_by_del_y =  -(sens.readings[i].landmark.x - X_next_hat[0]) / (((X_next_hat[0] - sens.readings[i].landmark.x)**2) + ((X_next_hat[1] - sens.readings[i].landmark.y)**2))
+
+                h_list[J][0] = del_range_by_del_x
+                h_list[J][1] = del_range_by_del_y
+                h_list[J][2] = 0
+                J= J+1
+                h_list[J][0] = del_bearing_by_del_x
+                h_list[J][1] = del_bearing_by_del_y
+                h_list[J][2] = -1
+                J = J+1
+        else:
+            h_list = numpy.zeros((2,3))
+    	return h_list
+    def state_estimate(self,sens):
+        X_next_hat = numpy.zeros((3,1))
+        X_next_hat[0] = self.x[0] + (0.01 * sens.vel_trans * math.cos(self.x[2]))
+        X_next_hat[1] = self.x[1] + (0.01 * sens.vel_trans * math.sin(self.x[2]))
+        X_next_hat[2] = self.x[2] + (0.01 * sens.vel_ang)
+        print 'X_next_hat', X_next_hat
+        return X_next_hat
+
+    def innovation(self,sens,new,landmark_estimate):
+        if len(sens.readings)!=0:
+            for i in range(len(sens.readings)):
+                if i in L:
+                    continue
+                new[i+i] =  sens.readings[i].range - landmark_estimate[i+i]
+                new[i+i+1] =  self.bearing_singul(sens.readings[i].bearing - landmark_estimate[i+i+1])
+        return new
+        
+    def covariance_sensor(self,sens,num):
+        
+        W = numpy.diag((0,0))
+        if len(sens.readings) !=0:
+            if (len(sens.readings)-num) == 1:
+                W = numpy.diag((0.1,0.05))
+            elif (len(sens.readings)-num) == 2:
+                W = numpy.diag((0.1,0.05,0.1,0.05))
+            elif (len(sens.readings)-num) == 3:
+                W = numpy.diag((0.1,0.05,0.1,0.05,0.1,0.05))
+        return W
+    
+    def bearing_singul(self,theta):
+        while theta > math.pi:
+            theta = theta - 2*math.pi
+        while theta < -math.pi:
+            theta = theta + 2*math.pi
+        return theta
+
+
+    def valid_landmark(self,sens,X_next_hat):
+        L = []
+        for i in range(len(sens.readings)):
+          if math.sqrt((sens.readings[i].landmark.x-X_next_hat[0])**2+(sens.readings[i].landmark.y-X_next_hat[1])**2) < 0.1:
+              L.append(i)
+        return L
+
+
+
+
+        #### ----- YOUR CODE GOES HERE ----- ####
+    
+    def sensor_callback(self,sens):
+
+        # Publish state estimate 
+        self.estimate(sens)
+        est_msg = RobotPose()
+        est_msg.header.stamp = sens.header.stamp
+        est_msg.pose.x = self.x[0]
+        est_msg.pose.y = self.x[1]
+        est_msg.pose.theta = self.x[2]
+        self.pub_est.publish(est_msg)
+
+if __name__ == '__main__':
+    rospy.init_node('state_estimator', anonymous=True)
+    est = Estimator()
+    rospy.spin()
